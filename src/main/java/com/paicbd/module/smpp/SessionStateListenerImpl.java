@@ -25,7 +25,7 @@ import static com.paicbd.module.utils.Constants.UNBOUND;
 public class SessionStateListenerImpl implements SessionStateListener {
     private final SocketSession socketSession;
     private final Gateway gateway;
-    private final String systemId;
+    private final int networkId;
     private final List<SMPPSession> sessions;
     @Getter
     private final AtomicInteger successSession = new AtomicInteger(0);
@@ -38,7 +38,7 @@ public class SessionStateListenerImpl implements SessionStateListener {
 
     public SessionStateListenerImpl(Gateway gateway, SocketSession socketSession, JedisCluster jedisCluster, List<SMPPSession> sessions) {
         this.gateway = gateway;
-        this.systemId = gateway.getSystemId();
+        this.networkId = gateway.getNetworkId();
         this.socketSession = socketSession;
         this.jedisCluster = jedisCluster;
         this.sessions = sessions;
@@ -52,26 +52,26 @@ public class SessionStateListenerImpl implements SessionStateListener {
             if (gateway.getSuccessSession() == 0) {
                 waitForSessionState();
                 gateway.setStatus(BINDING);
-                this.socketSession.sendStatus(systemId, PARAM_UPDATE_STATUS, BINDING);
+                this.socketSession.sendStatus(String.valueOf(networkId), PARAM_UPDATE_STATUS, BINDING);
             }
 
-            if ( gateway.getSessionsNumber() > gateway.getSuccessSession()) {
+            if (gateway.getSessionsNumber() > gateway.getSuccessSession()) {
                 gateway.setSuccessSession(successSession.incrementAndGet());
             }
 
-            this.socketSession.sendStatus(systemId, PARAM_UPDATE_SESSIONS, "1");
+            this.socketSession.sendStatus(String.valueOf(networkId), PARAM_UPDATE_SESSIONS, "1");
 
             if (gateway.getSuccessSession() == 1) {
                 gateway.setStatus(BOUND);
                 waitForSessionState();
-                this.socketSession.sendStatus(systemId, PARAM_UPDATE_STATUS, BOUND);
+                this.socketSession.sendStatus(String.valueOf(networkId), PARAM_UPDATE_STATUS, BOUND);
             }
 
             updateOnRedis();
         } else if (newState == SessionState.CLOSED) {
             if (gateway.getSuccessSession() <= 0) {
                 gateway.setSuccessSession(0);
-                this.socketSession.sendStatus(systemId, PARAM_UPDATE_SESSIONS, "0");
+                this.socketSession.sendStatus(String.valueOf(networkId), PARAM_UPDATE_SESSIONS, "0");
                 return;
             }
 
@@ -79,16 +79,16 @@ public class SessionStateListenerImpl implements SessionStateListener {
             if (gateway.getSuccessSession() == 1) {
                 gateway.setStatus(UNBINDING);
                 waitForSessionState();
-                this.socketSession.sendStatus(systemId, PARAM_UPDATE_STATUS, UNBINDING);
+                this.socketSession.sendStatus(String.valueOf(networkId), PARAM_UPDATE_STATUS, UNBINDING);
             }
 
             gateway.setSuccessSession(successSession.decrementAndGet());
-            this.socketSession.sendStatus(systemId, PARAM_UPDATE_SESSIONS, "-1");
+            this.socketSession.sendStatus(String.valueOf(networkId), PARAM_UPDATE_SESSIONS, "-1");
 
             if (gateway.getSuccessSession() == 0) {
                 gateway.setStatus(UNBOUND);
                 waitForSessionState();
-                this.socketSession.sendStatus(systemId, PARAM_UPDATE_STATUS, UNBOUND);
+                this.socketSession.sendStatus(String.valueOf(networkId), PARAM_UPDATE_STATUS, UNBOUND);
             }
 
             updateOnRedis();
@@ -100,7 +100,7 @@ public class SessionStateListenerImpl implements SessionStateListener {
     }
 
     public void updateOnRedis() {
-        jedisCluster.hset("gateways", systemId, this.gateway.toString());
+        jedisCluster.hset("gateways", String.valueOf(networkId), this.gateway.toString());
     }
 
     public void waitForSessionState() {

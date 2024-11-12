@@ -1,5 +1,6 @@
 package com.paicbd.module.utils;
 
+import com.paicbd.smsc.utils.Generated;
 import lombok.Getter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -7,22 +8,23 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 
 @Getter
+@Generated
 @Component
 public class AppProperties {
     @Value("#{'${redis.cluster.nodes}'.split(',')}")
     private List<String> redisNodes;
 
     @Value("${redis.threadPool.maxTotal}")
-    private int redisMaxTotal = 20;
+    private int redisMaxTotal;
 
     @Value("${redis.threadPool.maxIdle}")
-    private int redisMaxIdle = 20;
+    private int redisMaxIdle;
 
     @Value("${redis.threadPool.minIdle}")
-    private int redisMinIdle = 1;
+    private int redisMinIdle;
 
     @Value("${redis.threadPool.blockWhenExhausted}")
-    private boolean redisBlockWhenExhausted = true;
+    private boolean redisBlockWhenExhausted;
 
     @Value("${smpp.workersPerGateway}")
     private int workersPerGateway;
@@ -37,13 +39,13 @@ public class AppProperties {
     private String retryMessage;
 
     @Value("${redis.preDeliver.queue}")
-    private String preDeliverQueue = "preDeliver";
+    private String preDeliverQueue;
 
     @Value("${redis.preMessage.queue}")
-    private String preMessageQueue = "preMessage";
+    private String preMessageQueue;
 
     @Value("${redis.submitSmResult.queue}")
-    private String submitSmResultQueue = "submit_sm_result";
+    private String submitSmResultQueue;
 
     @Value("${websocket.server.host}")
     private String wsHost;

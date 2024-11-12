@@ -1,14 +1,14 @@
 package com.paicbd.module.smpp;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.paicbd.smsc.cdr.CdrProcessor;
 import com.paicbd.smsc.dto.Gateway;
 import com.paicbd.smsc.dto.MessageEvent;
-import com.paicbd.module.utils.SmppUtils;
 import com.paicbd.smsc.dto.SubmitSmResponseEvent;
 import com.paicbd.smsc.utils.Converter;
+import com.paicbd.smsc.utils.Generated;
 import com.paicbd.smsc.utils.MessageIDGeneratorImpl;
 import com.paicbd.smsc.utils.SmppEncoding;
+import com.paicbd.smsc.utils.SmppUtils;
 import com.paicbd.smsc.utils.UtilsEnum;
 import com.paicbd.smsc.utils.Watcher;
 import lombok.Setter;
@@ -29,7 +29,6 @@ import org.jsmpp.session.MessageReceiverListener;
 import org.jsmpp.session.SMPPSession;
 import org.jsmpp.session.Session;
 import org.jsmpp.session.SubmitSmResult;
-import org.jsmpp.util.IntUtil;
 import org.jsmpp.util.InvalidDeliveryReceiptException;
 import org.jsmpp.util.MessageIDGenerator;
 import org.jsmpp.util.MessageId;
@@ -48,14 +47,15 @@ import static com.paicbd.module.utils.Constants.ORIGIN_GATEWAY_TYPE;
  */
 @Slf4j
 public class MessageReceiverListenerImpl implements MessageReceiverListener {
+    private final AtomicInteger receivedSubmitSm = new AtomicInteger(0);
+    private final AtomicInteger receivedDeliverSm = new AtomicInteger(0);
+    private final MessageIDGenerator messageIDGenerator = new MessageIDGeneratorImpl();
+
     private final String preDeliverQueue;
     private final String preMessageQueue;
     private final CdrProcessor cdrProcessor;
     private final JedisCluster jedisCluster;
     private final String submitSmResultQueue;
-    private final AtomicInteger receivedSubmitSm = new AtomicInteger(0);
-    private final AtomicInteger receivedDeliverSm = new AtomicInteger(0);
-    private final MessageIDGenerator messageIDGenerator = new MessageIDGeneratorImpl();
 
     @Setter
     private Gateway gateway;
@@ -78,24 +78,21 @@ public class MessageReceiverListenerImpl implements MessageReceiverListener {
 
         if (isReceipt || isDefault) {
             Flux.just(deliverSm)
-                .flatMap(deliverSmEvent -> {
-                    try {
-                        return Flux.just(getDeliverSmEvent(deliverSm));
-                    } catch (InvalidDeliveryReceiptException e) {
-                        log.error("Error on getDeliverSmEvent {}", e.getMessage());
-                        return Flux.empty();
-                    }
-                })
-                .doOnNext(deliverSmEvent -> {
-                    deliverSmEvent.setSystemId(this.gateway.getSystemId());
-                    deliverSmEvent.setRegisteredDelivery(this.gateway.isRequestDLR() ? 1 : 0);
-                    addInQ(deliverSm, deliverSmEvent);
-                })
-                .subscribe();
+                    .flatMap(deliverSmEvent -> {
+                        try {
+                            return Flux.just(getDeliverSmEvent(deliverSm));
+                        } catch (InvalidDeliveryReceiptException e) {
+                            log.error("Error on getDeliverSmEvent {}", e.getMessage());
+                            return Flux.empty();
+                        }
+                    })
+                    .doOnNext(deliverSmEvent -> addDeliverSmInQ(deliverSm, deliverSmEvent))
+                    .subscribe();
         }
     }
 
     @Override
+    @Generated
     public void onAcceptAlertNotification(AlertNotification alertNotification) {
         log.debug("onAcceptAlertNotification: {} {}", alertNotification.getSourceAddr(), alertNotification.getEsmeAddr());
     }
@@ -116,12 +113,12 @@ public class MessageReceiverListenerImpl implements MessageReceiverListener {
         }
 
         MessageId messageId = messageIDGenerator.newMessageId();
-        addInQ(submitSm, messageId);
+        addSubmitSmInQ(submitSm, messageId);
 
         return new SubmitSmResult(messageId, new OptionalParameter[0]);
     }
 
-    private void addInQ(DeliverSm deliverSm, MessageEvent deliverSmEvent) {
+    protected void addDeliverSmInQ(DeliverSm deliverSm, MessageEvent deliverSmEvent) {
         try {
             boolean isDeliveryReceipt = MessageType.SMSC_DEL_RECEIPT.containedIn(deliverSm.getEsmClass());
             if (isDeliveryReceipt) {
@@ -144,13 +141,14 @@ public class MessageReceiverListenerImpl implements MessageReceiverListener {
                 deliverSmEvent.setErrorCode(delReceipt.getError());
 
                 String key = deliverSmEvent.getDeliverSmId();
-                String existSubmitResp = jedisCluster.hget(this.submitSmResultQueue, key);
+                String existSubmitResp = jedisCluster.hget(this.submitSmResultQueue, key.toUpperCase());
                 if (Objects.isNull(existSubmitResp)) {
                     log.error("The submit_sm response is not present, this deliver_sm can not be processed {}", delReceipt);
                     return;
                 }
 
-                SubmitSmResponseEvent submitSmResponseEvent = Converter.stringToObject(existSubmitResp, new TypeReference<>() {});
+                SubmitSmResponseEvent submitSmResponseEvent = Converter.stringToObject(existSubmitResp, SubmitSmResponseEvent.class);
+                Objects.requireNonNull(submitSmResponseEvent, "An error has occurred when converting the submitSmResponseEvent");
                 deliverSmEvent.setMessageId(submitSmResponseEvent.getSubmitSmServerId());
                 deliverSmEvent.setParentId(submitSmResponseEvent.getParentId());
             } else {
@@ -161,7 +159,7 @@ public class MessageReceiverListenerImpl implements MessageReceiverListener {
             }
 
             if (deliverSm.getOptionalParameters() != null && deliverSm.getOptionalParameters().length >= 1) {
-                deliverSmEvent.setOptionalParameters(SmppUtils.setTLV(deliverSm.getOptionalParameters()));
+                SmppUtils.setTLV(deliverSmEvent, deliverSm.getOptionalParameters());
             }
 
             deliverSmEvent.setSystemId(this.gateway.getSystemId());
@@ -173,12 +171,11 @@ public class MessageReceiverListenerImpl implements MessageReceiverListener {
             handlerCdrDetail(deliverSmEvent, UtilsEnum.MessageType.DELIVER, UtilsEnum.CdrStatus.RECEIVED, cdrProcessor, false, "RECEIVED FROM GW");
             receivedDeliverSm.incrementAndGet();
         } catch (Exception e) {
-            log.error("Error on send to the queue {}", e.getMessage());
+            log.error("Error on send to the queue {}", e.getMessage(), e);
         }
     }
 
-    private MessageEvent getDeliverSmEvent(DeliverSm deliverSm) throws InvalidDeliveryReceiptException {
-
+    protected MessageEvent getDeliverSmEvent(DeliverSm deliverSm) throws InvalidDeliveryReceiptException {
         int encodingType = SmppUtils.determineEncodingType(deliverSm.getDataCoding(), this.gateway);
         String decodedMessage = SmppEncoding.decodeMessage(deliverSm.getShortMessage(), encodingType);
 
@@ -187,12 +184,15 @@ public class MessageReceiverListenerImpl implements MessageReceiverListener {
         deliverSmEvent.setRegisteredDelivery((int) deliverSm.getRegisteredDelivery());
         this.setDataToMessageEvent(deliverSmEvent, deliverSm);
         deliverSmEvent.setShortMessage(decodedMessage);
-        if (MessageType.SMSC_DEL_RECEIPT.containedIn(deliverSm.getEsmClass())){
+        deliverSmEvent.setSystemId(this.gateway.getSystemId());
+        if (MessageType.SMSC_DEL_RECEIPT.containedIn(deliverSm.getEsmClass())) {
             deliverSmEvent.setDelReceipt(deliverSm.getShortMessageAsDeliveryReceipt().toString());
             deliverSmEvent.setCheckSubmitSmResponse(true);
+            deliverSmEvent.setRegisteredDelivery(gateway.isRequestDLR() ? 1 : 0);
         } else {
             deliverSmEvent.setDelReceipt(decodedMessage);
             deliverSmEvent.setCheckSubmitSmResponse(false);
+            deliverSmEvent.setRegisteredDelivery(0);
         }
 
         return deliverSmEvent;
@@ -204,7 +204,7 @@ public class MessageReceiverListenerImpl implements MessageReceiverListener {
             return Long.toHexString(Long.parseLong(id)).toUpperCase();
         }
         log.debug("The message_id is in hexadecimal format");
-        return id;
+        return SmppConnectionManager.cleanAndUpperString(id);
     }
 
     @Override
@@ -215,10 +215,11 @@ public class MessageReceiverListenerImpl implements MessageReceiverListener {
     /**
      * handling input submitSm messages
      */
-    private void addInQ(SubmitSm submitSm, MessageId messageId) {
+    protected void addSubmitSmInQ(SubmitSm submitSm, MessageId messageId) {
         MessageEvent submitSmEvent = createSubmitSmEvent(submitSm, messageId);
         submitSmEvent.setOriginNetworkType(ORIGIN_GATEWAY_TYPE);
         submitSmEvent.setOriginProtocol("SMPP");
+        submitSmEvent.setStringValidityPeriod(submitSm.getValidityPeriod());
 
         jedisCluster.lpush(preMessageQueue, submitSmEvent.toString());
         handlerCdrDetail(submitSmEvent, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.RECEIVED, cdrProcessor, false, "RECEIVED FROM GW");
@@ -234,13 +235,13 @@ public class MessageReceiverListenerImpl implements MessageReceiverListener {
         event.setParentId(messageId.getValue());
 
         if (submitSm.getOptionalParameters() != null && submitSm.getOptionalParameters().length >= 1) {
-            event.setOptionalParameters(SmppUtils.setTLV(submitSm.getOptionalParameters()));
+            SmppUtils.setTLV(event, submitSm.getOptionalParameters());
         }
 
         return event;
     }
 
-    private MessageEvent getSubmitSmEvent(SubmitSm submitSm, Gateway gateway) {
+    protected MessageEvent getSubmitSmEvent(SubmitSm submitSm, Gateway gateway) {
         int encodingType = SmppUtils.determineEncodingType(submitSm.getDataCoding(), gateway);
         String decodedMessage = SmppEncoding.decodeMessage(submitSm.getShortMessage(), encodingType);
         MessageEvent submitSmEvent = new MessageEvent();
@@ -271,7 +272,9 @@ public class MessageReceiverListenerImpl implements MessageReceiverListener {
         messageEvent.setDestAddrNpi((int) messageRequest.getDestAddrNpi());
         messageEvent.setDestinationAddr(messageRequest.getDestAddress());
         messageEvent.setEsmClass((int) messageRequest.getEsmClass());
-        messageEvent.setValidityPeriod(messageRequest.getValidityPeriod());
+        long validityPeriod = Objects.isNull(messageRequest.getValidityPeriod()) ? 0
+                : Converter.smppValidityPeriodToSeconds(messageRequest.getValidityPeriod());
+        messageEvent.setValidityPeriod(validityPeriod);
         messageEvent.setDataCoding((int) messageRequest.getDataCoding());
         messageEvent.setSmDefaultMsgId(messageRequest.getSmDefaultMsgId());
     }

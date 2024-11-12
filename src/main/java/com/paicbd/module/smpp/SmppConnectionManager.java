@@ -8,15 +8,13 @@ import com.paicbd.smsc.dto.SubmitSmResponseEvent;
 import com.paicbd.smsc.dto.MessageEvent;
 import com.paicbd.smsc.dto.Gateway;
 import com.paicbd.module.utils.AppProperties;
-import com.paicbd.module.utils.SmppUtils;
 import com.paicbd.smsc.utils.Converter;
 import com.paicbd.smsc.utils.SmppEncoding;
+import com.paicbd.smsc.utils.SmppUtils;
 import com.paicbd.smsc.utils.UtilsEnum;
 import com.paicbd.smsc.utils.Watcher;
 import com.paicbd.smsc.ws.SocketSession;
 import lombok.Getter;
-import lombok.NonNull;
-import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.jsmpp.InvalidResponseException;
 import org.jsmpp.PDUException;
@@ -59,7 +57,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
 import static com.paicbd.module.utils.Constants.PARAM_UPDATE_SESSIONS;
-import static com.paicbd.module.utils.Constants.PARAM_UPDATE_STATUS;
 import static com.paicbd.module.utils.Constants.STOPPED;
 
 /**
@@ -73,24 +70,24 @@ public class SmppConnectionManager {
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private final ThreadFactory factory = Thread.ofVirtual().name("okay-", 0).factory();
     private final ExecutorService service = Executors.newThreadPerTaskExecutor(factory);
-
-    private final JedisCluster jedisCluster;
-    private final SocketSession socketSession;
-    @Getter
-    private final SessionStateListenerImpl sessionStateListener;
     @Getter
     private final List<SMPPSession> sessions = new CopyOnWriteArrayList<>();
-    private final AtomicInteger requestCounterTotal = new AtomicInteger(0);
+
     private final AppProperties properties;
-    @Setter
-    @Getter
-    private Gateway gateway;
+    private final JedisCluster jedisCluster;
+    private final SocketSession socketSession;
+    private final AtomicInteger requestCounterTotal = new AtomicInteger(0);
     private final ConcurrentMap<String, List<ErrorCodeMapping>> errorCodeMappingConcurrentHashMap;
     private final ConcurrentMap<Integer, List<RoutingRule>> routingRulesConcurrentHashMap;
     private final MessageReceiverListenerImpl messageReceiverListener;
     private final String redisListName;
-    private boolean stopped = true;
     private final CdrProcessor cdrProcessor;
+    @Getter
+    private final SessionStateListenerImpl sessionStateListener;
+
+    @Getter
+    private Gateway gateway;
+    private boolean stopped = true;
 
     public SmppConnectionManager(
             JedisCluster jedisCluster, Gateway gateway, SocketSession socketSession,
@@ -106,7 +103,7 @@ public class SmppConnectionManager {
         this.routingRulesConcurrentHashMap = routingRulesConcurrentHashMap;
         this.properties = properties;
         this.messageReceiverListener = new MessageReceiverListenerImpl(
-                this.getGateway(),
+                this.gateway,
                 this.jedisCluster,
                 this.properties.getPreDeliverQueue(),
                 this.properties.getPreMessageQueue(),
@@ -117,25 +114,29 @@ public class SmppConnectionManager {
         log.info("Gateway [{}] will be working with rate of [{}] tps", gateway.getSystemId(), gateway.getTps());
         Thread.startVirtualThread(() -> new Watcher("Gateway " + gateway.getSystemId(), requestCounterTotal, 1));
         this.redisListName = this.gateway.getNetworkId() + "_smpp_message";
-        this.processor();
     }
 
-    private void processor() {
+    public void updateGatewayInDeep(Gateway gateway) {
+        log.debug("Updating Gateway with networkId {}, gateway {}", gateway.getNetworkId(), gateway);
+        this.gateway = gateway;
+        this.messageReceiverListener.setGateway(gateway);
+    }
+
+    public void startMessagesProcessor() {
         CompletableFuture.runAsync(() -> Flux.interval(Duration.ofMillis(this.properties.getGatewaysWorkExecuteEvery()))
                 .flatMap(f -> {
                     if (sessions.isEmpty()) {
                         return Flux.empty();
                     }
                     return fetchAllItems()
-                            .filter(Objects::nonNull)
                             .doOnNext(this::sendSubmitSmList);
                 })
                 .subscribe(), mainExecutor);
     }
 
-    public Flux<List<MessageEvent>> fetchAllItems() {
+    private Flux<List<MessageEvent>> fetchAllItems() {
         int batchSize = batchPerWorker();
-        if (batchSize <= 0) {
+        if (batchSize == 0) {
             return Flux.empty();
         }
         var wpg = this.properties.getWorkersPerGateway();
@@ -143,14 +144,10 @@ public class SmppConnectionManager {
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(worker -> {
                     List<String> batch = jedisCluster.lpop(redisListName, batchSize);
-                    if (Objects.isNull(batch) || batch.isEmpty()) {
-                        return Flux.empty();
-                    }
+                    Objects.requireNonNull(batch, "The batch obtained from redis should be " + batchSize + " but was null");
                     List<MessageEvent> submitSmEvents = batch
-                            .stream().parallel()
-                            .filter(Objects::nonNull)
-                            .map(msgRaw -> Converter.<MessageEvent>stringToObject(msgRaw, new TypeReference<>() {
-                            }))
+                            .parallelStream()
+                            .map(msgRaw -> Converter.stringToObject(msgRaw, MessageEvent.class))
                             .filter(Objects::nonNull)
                             .toList();
                     return Flux.just(submitSmEvents);
@@ -168,7 +165,7 @@ public class SmppConnectionManager {
         return bpw > 0 ? bpw : 1;
     }
 
-    private int handleException(@NonNull Exception exception, MessageEvent submitSmEvent) {
+    private int handleException(Exception exception, MessageEvent submitSmEvent) {
         String specificExceptionType = exception.getClass().getSimpleName();
         String message = "Failed on send submit_sm with id {} and messageId {} due to " + specificExceptionType;
         log.warn(message, submitSmEvent.getId(), submitSmEvent.getMessageId(), exception);
@@ -187,7 +184,7 @@ public class SmppConnectionManager {
         this.retryConnection();
     }
 
-    public SMPPSession createAndBindSmppSession(Gateway gateway) {
+    private SMPPSession createAndBindSmppSession(Gateway gateway) {
         SMPPSession smppSession = new SMPPSession();
         smppSession.addSessionStateListener(this.sessionStateListener);
         smppSession.setMessageReceiverListener(this.messageReceiverListener);
@@ -198,7 +195,8 @@ public class SmppConnectionManager {
 
         try {
             smppSession.connectAndBind(
-                    gateway.getIp(), gateway.getPort(), new BindParameter(
+                    gateway.getIp(), gateway.getPort(),
+                    new BindParameter(
                             UtilsEnum.getBindType(gateway.getBindType()),
                             gateway.getSystemId(),
                             gateway.getPassword(),
@@ -212,22 +210,21 @@ public class SmppConnectionManager {
                 log.debug("SMPP session bound to {}:{} with systemId {}", gateway.getIp(), gateway.getPort(), gateway.getSystemId());
                 return smppSession;
             }
-            return null;
         } catch (IOException e) {
             log.error("Error while connecting to Gateway {}", gateway.getSystemId());
-            return null;
         }
+        return null;
     }
 
-    public void initSessions(int qq) {
+    private void initSessions(int qq) {
         if ("stopped".equalsIgnoreCase(this.gateway.getStatus())
                 || this.gateway.getEnabled() != 1
-                || this.gateway.getSessionsNumber() <= 0
+                || this.gateway.getSessionsNumber() < 1
                 || this.sessions.size() >= this.gateway.getSessionsNumber()) {
             return;
         }
 
-        log.info("Starting SMPP sessions for gateway {}", this.gateway.getSystemId());
+        log.info("Starting SMPP sessions for gateway with networkId {}, quantity {}", this.gateway.getNetworkId(), qq);
         var smppSessionsBySp = IntStream.range(0, qq)
                 .parallel()
                 .mapToObj(i -> this.createAndBindSmppSession(gateway))
@@ -252,14 +249,13 @@ public class SmppConnectionManager {
         gateway.setStatus(STOPPED);
         gateway.setSuccessSession(0);
         this.sessionStateListener.getSuccessSession().set(0);
-        this.socketSession.sendStatus(gateway.getSystemId(), PARAM_UPDATE_STATUS, STOPPED);
-        this.socketSession.sendStatus(gateway.getSystemId(), PARAM_UPDATE_SESSIONS, "0");
+        this.socketSession.sendStatus(String.valueOf(gateway.getNetworkId()), PARAM_UPDATE_SESSIONS, "0");
         this.sessionStateListener.updateOnRedis();
-        this.jedisCluster.hset("gateways", this.gateway.getSystemId(), this.gateway.toString());
-        log.warn("Gateway {} has been stopped", this.gateway.getSystemId());
+        this.jedisCluster.hset("gateways", String.valueOf(gateway.getNetworkId()), gateway.toString());
+        log.warn("Gateway with networkId {} has been stopped", gateway.getNetworkId());
     }
 
-    public void retryConnection() {
+    private void retryConnection() {
         Runnable retryTask = () -> {
             if (this.stopped) {
                 return;
@@ -273,9 +269,9 @@ public class SmppConnectionManager {
         scheduler.scheduleAtFixedRate(retryTask, gateway.getBindRetryPeriod(), gateway.getBindRetryPeriod(), TimeUnit.MILLISECONDS);
     }
 
-    public void addInCache(int registeredDelivery, MessageEvent submitSmEvent, SubmitSmResult submitSmResult) {
+    private void addInCache(int registeredDelivery, MessageEvent submitSmEvent, SubmitSmResult submitSmResult) {
         if (registeredDelivery != 0) {
-            String messageIdResponse = submitSmResult.getMessageId().toUpperCase();
+            String messageIdResponse = cleanAndUpperString(submitSmResult.getMessageId());
             log.debug("Requesting DLR for submit_sm with id {} and messageId {}", submitSmEvent.getId(), messageIdResponse);
             SubmitSmResponseEvent submitSmResponseEvent = new SubmitSmResponseEvent();
             submitSmResponseEvent.setHashId(messageIdResponse);
@@ -294,7 +290,7 @@ public class SmppConnectionManager {
         }
     }
 
-    public void sendToRetryProcess(MessageEvent submitSmEventToRetry, int errorCode) {
+    private void sendToRetryProcess(MessageEvent submitSmEventToRetry, int errorCode) {
         log.warn("Starting retry process for submit_sm with id {} and error code {}", submitSmEventToRetry.getMessageId(), errorCode);
         if (errorContained(gateway.getNoRetryErrorCode(), errorCode)) {
             handleNoRetryError(submitSmEventToRetry, errorCode);
@@ -378,7 +374,7 @@ public class SmppConnectionManager {
         };
     }
 
-    public boolean errorContained(String stringList, int errorCode) {
+    private boolean errorContained(String stringList, int errorCode) {
         return Arrays.stream(stringList.split(",")).toList().contains(String.valueOf(errorCode));
     }
 
@@ -403,14 +399,9 @@ public class SmppConnectionManager {
     private void sendDeliverSm(MessageEvent submitSmEventToRetry, int errorCode) {
         MessageEvent deliverSmEvent = createDeliverSm(submitSmEventToRetry, errorCode);
         switch (submitSmEventToRetry.getOriginProtocol().toUpperCase()) {
-            case "HTTP":
-                jedisCluster.rpush("http_dlr", deliverSmEvent.toString());
-                break;
-            case "SMPP":
-                jedisCluster.rpush("smpp_dlr", deliverSmEvent.toString());
-                break;
-            default:
-                log.error("Invalid Origin Protocol");
+            case "HTTP" -> jedisCluster.rpush("http_dlr", deliverSmEvent.toString());
+            case "SMPP" -> jedisCluster.rpush("smpp_dlr", deliverSmEvent.toString());
+            default -> log.error("Invalid Origin Protocol");
         }
         MessageReceiverListenerImpl.handlerCdrDetail(deliverSmEvent, UtilsEnum.MessageType.DELIVER, UtilsEnum.CdrStatus.FAILED, cdrProcessor, false, "MESSAGE HAS BEEN FAILED, SENDING DLR");
     }
@@ -439,6 +430,7 @@ public class SmppConnectionManager {
 
         deliverSmEvent.setId(System.currentTimeMillis() + "-" + System.nanoTime());
         deliverSmEvent.setMessageId(submitSmEventToRetry.getMessageId());
+        deliverSmEvent.setParentId(submitSmEventToRetry.getMessageId());
         deliverSmEvent.setSystemId(submitSmEventToRetry.getSystemId());
         deliverSmEvent.setCommandStatus(submitSmEventToRetry.getCommandStatus());
         deliverSmEvent.setSequenceNumber(submitSmEventToRetry.getSequenceNumber());
@@ -467,7 +459,7 @@ public class SmppConnectionManager {
         return deliverSmEvent;
     }
 
-    public void sendSubmitSmList(List<MessageEvent> events) {
+    private void sendSubmitSmList(List<MessageEvent> events) {
         Flux.fromIterable(events)
                 .subscribeOn(Schedulers.boundedElastic())
                 .doOnNext(submitSmEvent -> {
@@ -515,7 +507,7 @@ public class SmppConnectionManager {
                     (byte) 0,
                     (byte) 0,
                     null,
-                    null,
+                    submitSmEvent.getStringValidityPeriod(),
                     new RegisteredDelivery(submitSmEvent.getRegisteredDelivery()),
                     (byte) 0,
                     dataCoding,
@@ -523,26 +515,43 @@ public class SmppConnectionManager {
                     encodedShortMessage,
                     Objects.nonNull(submitSmEvent.getOptionalParameters()) ? SmppUtils.getTLV(submitSmEvent) : new OptionalParameter[0]);
             requestCounterTotal.incrementAndGet();
-            // generate cdr
             MessageReceiverListenerImpl.handlerCdrDetail(submitSmEvent, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.SENT, cdrProcessor, true, "Sent to GW");
             service.execute(() -> addInCache(submitSmEvent.getRegisteredDelivery(), submitSmEvent, submitSmResult));
-        } catch (Exception exception) {
-            int errorHandlingResult = handleException(exception, submitSmEvent);
-            if (submitSmEvent.isLastRetry()) {
-                handlingLastRetry(submitSmEvent, errorHandlingResult);
-                return;
-            }
-            sendToRetryProcess(submitSmEvent, errorHandlingResult);
+        } catch (Exception e) {
+            handleExceptionForErrorOnSendSubmitSm(submitSmEvent, e);
         }
     }
 
-    public void handlingLastRetry(MessageEvent submitSmEvent, int errorCode) {
-        log.info("Last retry for submit_sm with id {}, the message will be sent to DLR", submitSmEvent.getMessageId());
-        MessageReceiverListenerImpl.handlerCdrDetail(submitSmEvent, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.FAILED, cdrProcessor, true, "VALIDITY PERIOD WILL BE EXCEEDED FOR NEXT RETRY");
+    private void handleExceptionForErrorOnSendSubmitSm(MessageEvent submitSmEvent, Exception exception) {
+        int errorHandlingResult = handleException(exception, submitSmEvent);
+        log.debug("Error handling result for submit_sm with id {} is {}. " +
+                        "Validity period is: {}, isLastRetry: {}",
+                submitSmEvent.getMessageId(), errorHandlingResult,
+                submitSmEvent.getValidityPeriod(), submitSmEvent.isLastRetry());
+
+        if (submitSmEvent.getValidityPeriod() == 0) {
+            handlingDlrForFailedMessage(submitSmEvent, errorHandlingResult, "THE VALIDITY PERIOD IS 0");
+            return;
+        }
+
+        if (submitSmEvent.isLastRetry()) {
+            handlingDlrForFailedMessage(submitSmEvent, errorHandlingResult, "THE MESSAGE HAS REACHED THE VALIDITY PERIOD");
+            return;
+        }
+
+        sendToRetryProcess(submitSmEvent, errorHandlingResult);
+    }
+
+    private void handlingDlrForFailedMessage(MessageEvent submitSmEvent, int errorCode, String message) {
+        MessageReceiverListenerImpl.handlerCdrDetail(submitSmEvent, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.FAILED, cdrProcessor, true, message);
         sendDeliverSm(submitSmEvent, errorCode);
     }
 
     private SMPPSession getRandomSession() {
         return sessions.get(secureRandom.nextInt(sessions.size()));
+    }
+
+    public static String cleanAndUpperString(String messageId) {
+        return messageId.replaceFirst("^0+", "").toUpperCase();
     }
 }

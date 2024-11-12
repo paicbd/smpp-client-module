@@ -63,7 +63,7 @@
 
 		<!-- Dependency versions -->
 		<jsmpp.version>3.1.5</jsmpp.version>
-		<smsc-utils.version>2.0.0-1</smsc-utils.version>
+		<smsc-utils.version>2.0.0-4</smsc-utils.version>
 		<dsl-json.version>2.0.2</dsl-json.version>
 		<mockito.version>5.12.0</mockito.version>
 		<junit.jupiter.version>5.10.3</junit.jupiter.version>

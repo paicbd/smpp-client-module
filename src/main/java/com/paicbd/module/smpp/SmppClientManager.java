@@ -1,28 +1,24 @@
 package com.paicbd.module.smpp;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicbd.smsc.cdr.CdrProcessor;
 import com.paicbd.smsc.dto.ErrorCodeMapping;
 import com.paicbd.smsc.dto.RoutingRule;
 import com.paicbd.smsc.dto.Gateway;
 import com.paicbd.module.utils.AppProperties;
+import com.paicbd.smsc.utils.Converter;
 import com.paicbd.smsc.ws.SocketSession;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
-import lombok.Getter;
-import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
-import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import redis.clients.jedis.JedisCluster;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
 
 import static com.paicbd.module.utils.Constants.PARAM_UPDATE_STATUS;
@@ -32,18 +28,15 @@ import static com.paicbd.module.utils.Constants.STOPPED;
  * @author <a href="mailto:enmanuelcalero61@gmail.com"> Enmanuel Calero </a>
  * @author <a href="mailto:ndiazobed@gmail.com"> Obed Navarrete </a>
  */
-@Setter
-@Getter
 @Slf4j
 @RequiredArgsConstructor
 @Component("smppClientManager")
 public class SmppClientManager {
-    private static final ObjectMapper objectMapper = new ObjectMapper();
     private final CdrProcessor cdrProcessor;
     private final JedisCluster jedisCluster;
     private final AppProperties appProperties;
     private final SocketSession socketSession;
-    private final ConcurrentMap<String, SmppConnectionManager> smppConnectionManagerList;
+    private final ConcurrentMap<Integer, SmppConnectionManager> smppConnectionManagerList;
     private final ConcurrentMap<String, List<ErrorCodeMapping>> errorCodeMappingConcurrentHashMap;
     private final ConcurrentMap<Integer, List<RoutingRule>> routingRulesConcurrentHashMap;
 
@@ -54,70 +47,66 @@ public class SmppClientManager {
         loadRoutingRules();
     }
 
-    public void updateGateway(@NonNull String systemId) {
-        String gatewayInRaw = jedisCluster.hget(appProperties.getKeyGatewayRedis(), systemId);
+    public void updateGateway(String stringNetworkId) {
+        String gatewayInRaw = jedisCluster.hget(appProperties.getKeyGatewayRedis(), stringNetworkId);
         if (gatewayInRaw == null) {
-            log.warn("No gateways found for connect on updateGateway");
+            log.debug("No gateways found for connect on updateGateway");
             return;
         }
-        try {
-            Gateway gateway = castGateway(gatewayInRaw);
-            if (!"smpp".equalsIgnoreCase(gateway.getProtocol())) {
-                log.warn("This gateway {} is not handled by this application. Failed to update", systemId);
-                return;
-            }
+        int networkId = Integer.parseInt(stringNetworkId);
+        Gateway gateway = castGateway(gatewayInRaw);
+        if (!"smpp".equalsIgnoreCase(gateway.getProtocol())) {
+            log.warn("The gateway with networkId {} is not handled by this application. Failed to update", networkId);
+            return;
+        }
 
-            if (smppConnectionManagerList.containsKey(systemId)) {
-                SmppConnectionManager smppConnectionManager = smppConnectionManagerList.get(systemId);
-                smppConnectionManager.setGateway(gateway);
-            } else {
-                SmppConnectionManager smppConnectionManager = new SmppConnectionManager(
-                        jedisCluster, gateway, socketSession,
-                        errorCodeMappingConcurrentHashMap,
-                        routingRulesConcurrentHashMap,
-                        appProperties,
-                        cdrProcessor
-                );
-                smppConnectionManagerList.put(gateway.getSystemId(), smppConnectionManager);
-            }
-        } catch (JsonProcessingException ex) {
-            log.error("Error on update the smpp connections {}. {}", systemId, ex.getMessage());
+        if (smppConnectionManagerList.containsKey(networkId)) {
+            SmppConnectionManager smppConnectionManager = smppConnectionManagerList.get(networkId);
+            smppConnectionManager.updateGatewayInDeep(gateway);
+        } else {
+            SmppConnectionManager smppConnectionManager = new SmppConnectionManager(
+                    jedisCluster, gateway, socketSession,
+                    errorCodeMappingConcurrentHashMap,
+                    routingRulesConcurrentHashMap,
+                    appProperties,
+                    cdrProcessor
+            );
+            smppConnectionManager.startMessagesProcessor();
+            smppConnectionManagerList.put(gateway.getNetworkId(), smppConnectionManager);
         }
     }
 
-    public void connectGateway(@NonNull String systemId) {
-        SmppConnectionManager smppConnectionManager = smppConnectionManagerList.get(systemId);
-        if (Objects.isNull(smppConnectionManager)) { // Probably is an HTTP gateway trying to connect, this is not handled by this application
-            log.warn("This gateway is not handled by this application, {}", systemId);
-            return;
-        }
+    public void connectGateway(String stringNetworkId) {
         try {
+            SmppConnectionManager smppConnectionManager = smppConnectionManagerList.get(Integer.parseInt(stringNetworkId));
+            if (Objects.isNull(smppConnectionManager)) { // Probably is an HTTP gateway trying to connect, this is not handled by this application
+                log.warn("This gateway is not present in the application, probably is an HTTP gateway");
+                return;
+            }
+
             smppConnectionManager.getGateway().setEnabled(1);
             smppConnectionManager.getGateway().setStatus("STARTED");
             smppConnectionManager.connect();
         } catch (Exception e) {
-            log.error("Error on connect on gateway {} with error {}", systemId, e.getMessage());
+            log.error("Error on connect on gateway {} with error {}", stringNetworkId, e.getMessage(), e);
         }
     }
 
-    public void stopGateway(@NonNull String systemId) {
-        log.info("Stopping gateway {}", systemId);
-        SmppConnectionManager smppConnectionManager = smppConnectionManagerList.get(systemId);
+    public void stopGateway(String stringNetworkId) {
+        log.info("Stopping gateway with networkId {}", stringNetworkId);
+        SmppConnectionManager smppConnectionManager = smppConnectionManagerList.get(Integer.parseInt(stringNetworkId));
         if (Objects.isNull(smppConnectionManager)) {
-            log.warn("The gateway {} is not handled by this application", systemId);
+            log.warn("The gateway {} is not handled by this application", stringNetworkId);
             return;
         }
-        try {
-            smppConnectionManager.stopConnection();
-            socketSession.sendStatus(systemId, PARAM_UPDATE_STATUS, STOPPED);
-        } catch (Exception e) {
-            log.error("Error on stop on gateway {} with error {}", systemId, e.getMessage());
-        }
 
+        smppConnectionManager.stopConnection();
+        socketSession.sendStatus(stringNetworkId, PARAM_UPDATE_STATUS, STOPPED);
     }
 
-    private Gateway castGateway(String gatewayInRaw) throws JsonProcessingException {
-        Gateway gateway = objectMapper.readValue(gatewayInRaw, Gateway.class);
+    private Gateway castGateway(String gatewayInRaw) {
+        Gateway gateway = Converter.stringToObject(gatewayInRaw, Gateway.class);
+        Objects.requireNonNull(gateway, "An error occurred while casting the gateway");
         if (gateway.getPduProcessorDegree() <= 0)
             gateway.setPduProcessorDegree(appProperties.getSmppProcessorDegree());
         if (gateway.getThreadPoolSize() <= 0)
@@ -131,43 +120,31 @@ public class SmppClientManager {
     }
 
     private void loadSmppConnectionManager() {
-        Set<String> gatewaysKey = jedisCluster.hkeys(appProperties.getKeyGatewayRedis());
+        Map<String, String> gatewaysKey = jedisCluster.hgetAll(appProperties.getKeyGatewayRedis());
         if (!gatewaysKey.isEmpty()) {
-            gatewaysKey.forEach(key -> {
-                try {
-                    String gatewayInRaw = jedisCluster.hget(appProperties.getKeyGatewayRedis(), key);
-                    Gateway gateway = castGateway(gatewayInRaw);
-                    if ("SMPP".equalsIgnoreCase(gateway.getProtocol())) {
-                        SmppConnectionManager smppConnectionManager = new SmppConnectionManager(
-                                jedisCluster, gateway, socketSession, errorCodeMappingConcurrentHashMap,
-                                routingRulesConcurrentHashMap, appProperties, cdrProcessor);
-
-                        smppConnectionManagerList.put(gateway.getSystemId(), smppConnectionManager);
-                    }
-                } catch (JsonProcessingException ex) {
-                    log.error("Error on load the smpp connections {}", ex.getMessage());
+            gatewaysKey.forEach((stringNetworkId, gatewayInRaw) -> {
+                Gateway gateway = castGateway(gatewayInRaw);
+                if ("SMPP".equalsIgnoreCase(gateway.getProtocol())) {
+                    SmppConnectionManager smppConnectionManager = new SmppConnectionManager(
+                            jedisCluster, gateway, socketSession, errorCodeMappingConcurrentHashMap,
+                            routingRulesConcurrentHashMap, appProperties, cdrProcessor);
+                    smppConnectionManager.startMessagesProcessor();
+                    smppConnectionManagerList.put(gateway.getNetworkId(), smppConnectionManager);
                 }
             });
             log.warn("{} Gateways load successfully", smppConnectionManagerList.values().size());
         } else {
-            log.warn("No gateways found for connect, class {}, method {}", this.getClass().getName(), "loadSmppConnectionManager");
+            log.warn("No gateways found for connect");
         }
     }
 
     private void loadErrorCodeMapping() {
-        Set<String> errorCodeKeys = jedisCluster.hkeys(appProperties.getKeyErrorCodeMapping());
+        Map<String, String> errorCodeKeys = jedisCluster.hgetAll(appProperties.getKeyErrorCodeMapping());
         if (!errorCodeKeys.isEmpty()) {
-            errorCodeKeys.forEach(key -> {
-                try {
-                    List<ErrorCodeMapping> errorCodeMappingList;
-                    String errorCodeMappingInRaw = jedisCluster.hget(appProperties.getKeyErrorCodeMapping(), key);
-                    errorCodeMappingList = objectMapper.readValue(errorCodeMappingInRaw, new TypeReference<>() {
-                    });
-
-                    errorCodeMappingConcurrentHashMap.put(key, errorCodeMappingList);
-                } catch (JsonProcessingException ex) {
-                    log.error("Error on load the error code mapping on method loadErrorCodeMapping {}", ex.getMessage());
-                }
+            errorCodeKeys.forEach((stringMnoId, errorCodeMappingListInRaw) -> {
+                List<ErrorCodeMapping> errorCodeMappingList = Converter.stringToObject(errorCodeMappingListInRaw, new TypeReference<>() {
+                });
+                errorCodeMappingConcurrentHashMap.put(stringMnoId, errorCodeMappingList);
             });
             log.warn("{} Error code mapping load successfully", errorCodeMappingConcurrentHashMap.values().size());
         } else {
@@ -176,45 +153,38 @@ public class SmppClientManager {
     }
 
     public void updateErrorCodeMapping(String mnoId) {
-        try {
-            String errorCodeMappingInRaw = jedisCluster.hget(appProperties.getKeyErrorCodeMapping(), mnoId);
-            if (errorCodeMappingInRaw == null) {
-                errorCodeMappingConcurrentHashMap.remove(mnoId); // Remove if existed, if not exist do anything
-                return;
-            }
-            List<ErrorCodeMapping> errorCodeMappingList = objectMapper.readValue(errorCodeMappingInRaw, new TypeReference<>() {
-            });
-            errorCodeMappingConcurrentHashMap.put(mnoId, errorCodeMappingList); // Put do it the replacement if exist
-        } catch (JsonProcessingException ex) {
-            log.error("Error on load the error code mapping on method updateErrorCodeMapping {}", ex.getMessage());
+        String errorCodeMappingInRaw = jedisCluster.hget(appProperties.getKeyErrorCodeMapping(), mnoId);
+        if (errorCodeMappingInRaw == null) {
+            errorCodeMappingConcurrentHashMap.remove(mnoId); // Remove if existed, if not exist do anything
+            return;
         }
+
+        List<ErrorCodeMapping> errorCodeMappingList = Converter.stringToObject(errorCodeMappingInRaw, new TypeReference<>() {
+        });
+        errorCodeMappingConcurrentHashMap.put(mnoId, errorCodeMappingList); // Put do it the replacement if exist
     }
 
-    public void deleteGateway(String systemId) {
-        log.warn("Deleting gateway {}", systemId);
-        SmppConnectionManager smppConnectionManager = smppConnectionManagerList.get(systemId);
+    public void deleteGateway(String stringNetworkId) {
+        log.warn("Deleting gateway {}", stringNetworkId);
+        SmppConnectionManager smppConnectionManager = smppConnectionManagerList.get(Integer.parseInt(stringNetworkId));
         if (Objects.isNull(smppConnectionManager)) {
-            log.warn("The gateway {} is not handled by this application. Failed to delete", systemId);
+            log.warn("The gateway {} is not handled by this application. Failed to delete", stringNetworkId);
             return;
         }
         smppConnectionManager.stopConnection();
-        smppConnectionManagerList.remove(systemId);
+        smppConnectionManagerList.remove(Integer.parseInt(stringNetworkId));
     }
 
-    public void loadRoutingRules() {
+    private void loadRoutingRules() {
         var redisRoutingRules = jedisCluster.hgetAll(appProperties.getRoutingRulesHash());
         redisRoutingRules.entrySet().parallelStream().forEach(entry -> {
-            try {
-                String data = String.valueOf(entry.getValue());
-                data = data.replace("\\", "\\\\");
-                List<RoutingRule> routingList = objectMapper.readValue(data, new TypeReference<>() {
-                });
-                routingRulesConcurrentHashMap.put(Integer.parseInt(entry.getKey()), new ArrayList<>());
-                routingList.forEach(r -> routingRulesConcurrentHashMap.get(r.getOriginNetworkId()).add(r));
-                log.info("Loaded routing rules for network id: {}, rules: {}", entry.getKey(), routingList.size());
-            } catch (Exception e) {
-                log.error("Error loading routing rule: {}", e.getMessage());
-            }
+            String data = String.valueOf(entry.getValue());
+            data = data.replace("\\", "\\\\");
+            List<RoutingRule> routingList = Converter.stringToObject(data, new TypeReference<>() {
+            });
+            routingRulesConcurrentHashMap.put(Integer.parseInt(entry.getKey()), new ArrayList<>());
+            routingList.forEach(r -> routingRulesConcurrentHashMap.get(r.getOriginNetworkId()).add(r));
+            log.info("Loaded routing rules for network id: {}, rules: {}", entry.getKey(), routingList.size());
         });
         log.info("Loaded routing rules: {}", routingRulesConcurrentHashMap.size());
     }
@@ -225,14 +195,10 @@ public class SmppClientManager {
             log.info("No routing rule found for network id {}", networkId);
             return;
         }
-        try {
-            List<RoutingRule> routingMappingList = objectMapper.readValue(routingRuleInRaw, new TypeReference<>() {
-            });
-            routingRulesConcurrentHashMap.put(Integer.parseInt(networkId), routingMappingList);
-            log.info("Updated routing rules for network id {}: {}", networkId, routingMappingList.toArray());
-        } catch (JsonProcessingException ex) {
-            log.error("Error on update the routing rule on method updateRoutingRule {}", ex.getMessage());
-        }
+        List<RoutingRule> routingMappingList = Converter.stringToObject(routingRuleInRaw, new TypeReference<>() {
+        });
+        routingRulesConcurrentHashMap.put(Integer.parseInt(networkId), routingMappingList);
+        log.info("Updated routing rules for network id {}: {}", networkId, routingMappingList.toArray());
     }
 
     public void deleteRoutingRule(String networkId) {

@@ -1,5 +1,8 @@
 package com.paicbd.module.utils;
 
+import lombok.Generated;
+
+@Generated
 public class Constants {
     private Constants() {
         throw new IllegalStateException("Utility class");
@@ -10,9 +13,6 @@ public class Constants {
     public static final String BOUND = "BOUND";
     public static final String UNBINDING = "UNBINDING";
     public static final String UNBOUND = "UNBOUND";
-    public static final String TYPE = "gw";
-    public static final String WEBSOCKET_STATUS_ENDPOINT = "/app/handler-status";
-    public static final String SESSION_CONFIRM_ENDPOINT = "/app/session-confirm";
     public static final String UPDATE_GATEWAY_ENDPOINT = "/app/updateGateway";
     public static final String CONNECT_GATEWAY_ENDPOINT = "/app/connectGateway";
     public static final String RESPONSE_SMPP_CLIENT_ENDPOINT = "/app/response-smpp-client";
