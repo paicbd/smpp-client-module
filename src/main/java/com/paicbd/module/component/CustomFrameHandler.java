@@ -1,4 +1,4 @@
-package com.paicbd.module.config;
+package com.paicbd.module.component;
 
 import com.paicbd.module.smpp.SmppClientManager;
 import com.paicbd.smsc.ws.FrameHandler;
@@ -28,44 +28,51 @@ public class CustomFrameHandler implements FrameHandler {
 
     @Override
     public void handleFrameLogic(StompHeaders headers, Object payload) {
-        String systemId = payload.toString();
-        String destination = headers.getDestination();
-        Objects.requireNonNull(systemId, "System ID cannot be null");
-        Objects.requireNonNull(destination, "Destination cannot be null");
+        try {
+            String payloadId = payload.toString();
+            Integer.parseInt(payloadId);
 
-        switch (destination) {
-            case UPDATE_GATEWAY_ENDPOINT -> handleUpdateGateway(systemId);
-            case CONNECT_GATEWAY_ENDPOINT -> handleConnectGateway(systemId);
-            case STOP_GATEWAY_ENDPOINT -> handleStopGateway(systemId);
-            case DELETE_GATEWAY_ENDPOINT -> handleDeleteGateway(systemId);
-            case UPDATE_ERROR_CODE_MAPPING_ENDPOINT -> handleUpdateErrorCodeMapping(systemId);
-            case UPDATE_ROUTING_RULE_ENDPOINT -> handleUpdateRoutingRule(systemId);
-            case DELETE_ROUTING_RULE_ENDPOINT -> handleDeleteRoutingRule(systemId);
-            default -> log.warn("Unknown destination: {}", destination);
+            String destination = headers.getDestination();
+            Objects.requireNonNull(payloadId, "The payload cannot be null");
+            Objects.requireNonNull(destination, "Destination cannot be null");
+
+            switch (destination) {
+                case UPDATE_GATEWAY_ENDPOINT -> handleUpdateGateway(payloadId);
+                case CONNECT_GATEWAY_ENDPOINT -> handleConnectGateway(payloadId);
+                case STOP_GATEWAY_ENDPOINT -> handleStopGateway(payloadId);
+                case DELETE_GATEWAY_ENDPOINT -> handleDeleteGateway(payloadId);
+                case UPDATE_ERROR_CODE_MAPPING_ENDPOINT -> handleUpdateErrorCodeMapping(payloadId);
+                case UPDATE_ROUTING_RULE_ENDPOINT -> handleUpdateRoutingRule(payloadId);
+                case DELETE_ROUTING_RULE_ENDPOINT -> handleDeleteRoutingRule(payloadId);
+                default -> log.warn("Unknown destination: {}", destination);
+            }
+        } catch (NumberFormatException e) {
+            log.error("Invalid payload: {}, while processing destination: {}", payload, headers.getDestination());
+            throw new IllegalArgumentException("Invalid payload");
         }
     }
 
-    private void handleUpdateGateway(String systemId) {
-        log.info("Updating gateway {}", systemId);
-        this.smppClientManager.updateGateway(systemId);
+    private void handleUpdateGateway(String networkId) {
+        log.info("Updating gateway {}", networkId);
+        this.smppClientManager.updateGateway(networkId);
         this.sendResponse("Notified the gateway to update");
     }
 
-    private void handleConnectGateway(String systemId) {
-        log.info("Connecting gateway {}", systemId);
-        this.smppClientManager.connectGateway(systemId);
+    private void handleConnectGateway(String networkId) {
+        log.info("Connecting gateway {}", networkId);
+        this.smppClientManager.connectGateway(networkId);
         this.sendResponse("Notified the gateway to connect");
     }
 
-    private void handleStopGateway(String systemId) {
-        log.info("Stopping gateway {}", systemId);
-        this.smppClientManager.stopGateway(systemId);
+    private void handleStopGateway(String networkId) {
+        log.info("Stopping gateway {}", networkId);
+        this.smppClientManager.stopGateway(networkId);
         this.sendResponse("Notified the gateway to stop");
     }
 
-    private void handleDeleteGateway(String systemId) {
-        log.info("Deleting gateway {}", systemId);
-        this.smppClientManager.deleteGateway(systemId);
+    private void handleDeleteGateway(String networkId) {
+        log.info("Deleting gateway {}", networkId);
+        this.smppClientManager.deleteGateway(networkId);
         this.sendResponse("Notified the gateway to delete");
     }
 

@@ -1,9 +1,11 @@
 package com.paicbd.module.config;
 
+import com.paicbd.module.component.CustomFrameHandler;
 import com.paicbd.module.utils.AppProperties;
 import com.paicbd.smsc.dto.UtilsRecords;
 import com.paicbd.smsc.ws.SocketClient;
 import com.paicbd.smsc.ws.SocketSession;
+import lombok.Generated;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
@@ -20,6 +22,7 @@ import static com.paicbd.module.utils.Constants.UPDATE_GATEWAY_ENDPOINT;
 import static com.paicbd.module.utils.Constants.UPDATE_ROUTING_RULE_ENDPOINT;
 
 @Slf4j
+@Generated
 @Configuration
 @RequiredArgsConstructor
 public class WebSocketConfig {

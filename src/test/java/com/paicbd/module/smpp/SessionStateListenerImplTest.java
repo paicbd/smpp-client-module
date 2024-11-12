@@ -6,6 +6,7 @@ import org.jsmpp.extra.SessionState;
 import org.jsmpp.session.SMPPSession;
 import org.jsmpp.session.Session;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -13,11 +14,12 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import redis.clients.jedis.JedisCluster;
 
-import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static com.paicbd.module.utils.Constants.PARAM_UPDATE_STATUS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class SessionStateListenerImplTest {
@@ -28,7 +30,7 @@ class SessionStateListenerImplTest {
     Gateway gateway;
 
     @Mock
-    List<SMPPSession> sessions = new ArrayList<>();
+    List<SMPPSession> sessions;
 
     @Mock
     JedisCluster jedisCluster;
@@ -38,68 +40,96 @@ class SessionStateListenerImplTest {
 
     @BeforeEach
     void setUp() {
-        this.gateway = new Gateway();
-        gateway.setNetworkId(1);
-        gateway.setName("smppgw");
-        gateway.setSystemId("systemId");
-        gateway.setPassword("password");
-        gateway.setIp("192.168.100.20");
-        gateway.setPort(7001);
-        gateway.setBindType("TRANSCEIVER");
-        gateway.setSystemType("");
-        gateway.setInterfaceVersion("IF_50");
-        gateway.setSessionsNumber(10);
-        gateway.setAddressTON(0);
-        gateway.setAddressNPI(0);
-        gateway.setAddressRange(null);
-        gateway.setTps(10);
-        gateway.setSuccessSession(0);
-        gateway.setStatus("STARTED");
-        gateway.setEnabled(0);
-        gateway.setEnquireLinkPeriod(30000);
-        gateway.setEnquireLinkTimeout(0);
-        gateway.setRequestDLR(true);
-        gateway.setNoRetryErrorCode("");
-        gateway.setRetryAlternateDestinationErrorCode("");
-        gateway.setBindTimeout(5000);
-        gateway.setBindRetryPeriod(10000);
-        gateway.setPduTimeout(5000);
-        gateway.setPduProcessorDegree(1);
-        gateway.setThreadPoolSize(100);
-        gateway.setMno(1);
-        gateway.setTlvMessageReceiptId(false);
-        gateway.setMessageIdDecimalFormat(false);
-        gateway.setProtocol("SMPP");
-        gateway.setAutoRetryErrorCode("");
-        gateway.setEncodingIso88591(3);
-        gateway.setEncodingGsm7(0);
-        gateway.setEncodingUcs2(2);
-        gateway.setSplitMessage(false);
-        gateway.setSplitSmppType("TLV");
-
-        socketSession = new SocketSession("gw");
+        this.gateway = Gateway.builder()
+                .networkId(1)
+                .name("SMPP-Operator")
+                .systemId("op_01_smpp_gw")
+                .sessionsNumber(10)
+                .tps(10)
+                .successSession(0)
+                .status("STARTED")
+                .enabled(0)
+                .enquireLinkPeriod(30000)
+                .enquireLinkTimeout(0)
+                .requestDLR(true)
+                .protocol("SMPP")
+                .build();
         this.sessionStateListener = new SessionStateListenerImpl(gateway, socketSession, jedisCluster, sessions);
     }
 
     @Test
-    void onStateChange() {
+    @DisplayName("On State Change When Bound Sessions Then Success")
+    void onStateChangeWhenBoundSessionsThenSuccess() {
         // BOUND_TRX
-        SessionState newState = SessionState.BOUND_TRX;
-        SessionState oldState = SessionState.OUTBOUND;
         Session source = new SMPPSession();
-        assertEquals("systemId", gateway.getSystemId());
-        assertDoesNotThrow(() -> sessionStateListener.onStateChange(newState, oldState, source));
+        assertEquals(1, gateway.getNetworkId());
+
+        assertEquals("STARTED", gateway.getStatus());
+        sessionStateListener.onStateChange(SessionState.BOUND_TRX, SessionState.OUTBOUND, source);
         assertEquals(1, gateway.getSuccessSession());
+        assertEquals("BOUND", gateway.getStatus());
+        verify(jedisCluster).hset("gateways", String.valueOf(gateway.getNetworkId()), gateway.toString());
 
-        // CLOSED
-        SessionState newState2 = SessionState.CLOSED;
-        SessionState oldState2 = SessionState.BOUND_TRX;
-        assertDoesNotThrow(() -> sessionStateListener.onStateChange(newState2, oldState2, source));
-        assertEquals(0, gateway.getSuccessSession());
+        sessionStateListener.onStateChange(SessionState.BOUND_TRX, SessionState.OUTBOUND, source);
+        assertEquals(2, gateway.getSuccessSession());
+        assertEquals("BOUND", gateway.getStatus());
+        verify(jedisCluster).hset("gateways", String.valueOf(gateway.getNetworkId()), gateway.toString());
 
-        // SuccessSession == 0
-        gateway.setSuccessSession(0);
-        assertDoesNotThrow(() -> sessionStateListener.onStateChange(newState2, oldState2, source));
+        sessionStateListener.onStateChange(SessionState.BOUND_TRX, SessionState.OUTBOUND, source);
+        assertEquals(3, gateway.getSuccessSession());
+        assertEquals("BOUND", gateway.getStatus());
+        verify(jedisCluster).hset("gateways", String.valueOf(gateway.getNetworkId()), gateway.toString());
+
+        // BOUND_RX
+        sessionStateListener.onStateChange(SessionState.BOUND_RX, SessionState.OUTBOUND, source);
+        assertEquals(4, gateway.getSuccessSession());
+        assertEquals("BOUND", gateway.getStatus());
+        verify(jedisCluster).hset("gateways", String.valueOf(gateway.getNetworkId()), gateway.toString());
+
+        // BOUND_TX
+        sessionStateListener.onStateChange(SessionState.BOUND_TX, SessionState.OUTBOUND, source);
+        assertEquals(5, gateway.getSuccessSession());
+        assertEquals("BOUND", gateway.getStatus());
+        verify(jedisCluster).hset("gateways", String.valueOf(gateway.getNetworkId()), gateway.toString());
+    }
+
+    @Test
+    @DisplayName("On State Change When Closed Sessions Then Success")
+    void onStateChangeWhenNotBoundSessionsThenSuccess() {
+        Session source = new SMPPSession();
+        assertEquals(1, gateway.getNetworkId());
+
+        assertEquals("STARTED", gateway.getStatus());
+        sessionStateListener.onStateChange(SessionState.BOUND_TRX, SessionState.OUTBOUND, source);
+        sessionStateListener.onStateChange(SessionState.BOUND_TRX, SessionState.OUTBOUND, source);
+        assertEquals(2, gateway.getSuccessSession());
+        assertEquals("BOUND", gateway.getStatus());
+
+        sessionStateListener.onStateChange(SessionState.UNBOUND, SessionState.BOUND_TRX, source);
+        sessionStateListener.onStateChange(SessionState.CLOSED, SessionState.UNBOUND, source);
+        assertEquals(1, gateway.getSuccessSession());
+        assertEquals("BOUND", gateway.getStatus());
+
+        sessionStateListener.onStateChange(SessionState.UNBOUND, SessionState.BOUND_TRX, source);
+        sessionStateListener.onStateChange(SessionState.CLOSED, SessionState.UNBOUND, source);
         assertEquals(0, gateway.getSuccessSession());
+        assertEquals("UNBOUND", gateway.getStatus());
+
+        verify(jedisCluster).hset("gateways", String.valueOf(gateway.getNetworkId()), gateway.toString());
+        verify(socketSession).sendStatus(String.valueOf(gateway.getNetworkId()), PARAM_UPDATE_STATUS, "UNBOUND");
+    }
+
+    @Test
+    @DisplayName("On State Change When Stopped And Success Session Is Zero Then Success")
+    void onStateChangeWhenStoppedAndSuccessSessionIsZeroThenSuccess() {
+        Session source = new SMPPSession();
+        assertEquals(1, gateway.getNetworkId());
+
+        assertEquals("STARTED", gateway.getStatus());
+        sessionStateListener.onStateChange(SessionState.CLOSED, SessionState.BOUND_TRX, source);
+        assertEquals(0, gateway.getSuccessSession());
+        assertEquals("STARTED", gateway.getStatus());
+        verify(jedisCluster, never()).hset("gateways", String.valueOf(gateway.getNetworkId()), gateway.toString());
+        verify(socketSession, never()).sendStatus(String.valueOf(gateway.getNetworkId()), PARAM_UPDATE_STATUS, "STARTED");
     }
 }
