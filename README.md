@@ -1,6 +1,6 @@
 # SMPP Client Module
 
-The `smpp-client-module` is a crucial component in the SMSC (Short Message Service Center) environment. This module is responsible for establishing and managing SMPP (Short Message Peer-to-Peer) connections with external gateways for message submissions. It handles retries for undelivered messages and integrates with Redis to manage message queues efficiently. Additionally, it supports WebSocket communication for real-time interaction and JMX monitoring for performance tracking.
+The `smpp-client-module` is a crucial component in the SMSC Short Message Service Center (SMSC) environment. This module is responsible for establishing and managing Short Message Peer-to-Peer (SMPP) connections with external gateways for message submissions. It handles retries for undelivered messages and integrates with Redis to manage message queues efficiently. Additionally, it supports WebSocket communication for real-time interaction and JMX monitoring for performance tracking.
 
 ## Key Features
 
