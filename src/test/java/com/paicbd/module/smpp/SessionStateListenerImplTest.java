@@ -51,7 +51,7 @@ class SessionStateListenerImplTest {
                 .enabled(0)
                 .enquireLinkPeriod(30000)
                 .enquireLinkTimeout(0)
-                .requestDLR(true)
+                .requestDLR(1)
                 .protocol("SMPP")
                 .build();
         this.sessionStateListener = new SessionStateListenerImpl(gateway, socketSession, jedisCluster, sessions);

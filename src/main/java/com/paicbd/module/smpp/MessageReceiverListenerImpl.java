@@ -188,13 +188,11 @@ public class MessageReceiverListenerImpl implements MessageReceiverListener {
         if (MessageType.SMSC_DEL_RECEIPT.containedIn(deliverSm.getEsmClass())) {
             deliverSmEvent.setDelReceipt(deliverSm.getShortMessageAsDeliveryReceipt().toString());
             deliverSmEvent.setCheckSubmitSmResponse(true);
-            deliverSmEvent.setRegisteredDelivery(gateway.isRequestDLR() ? 1 : 0);
         } else {
             deliverSmEvent.setDelReceipt(decodedMessage);
             deliverSmEvent.setCheckSubmitSmResponse(false);
-            deliverSmEvent.setRegisteredDelivery(0);
         }
-
+        deliverSmEvent.setRegisteredDelivery(0);
         return deliverSmEvent;
     }
 
@@ -247,13 +245,15 @@ public class MessageReceiverListenerImpl implements MessageReceiverListener {
         MessageEvent submitSmEvent = new MessageEvent();
         submitSmEvent.setRetry(false);
         submitSmEvent.setRetryDestNetworkId("");
-        submitSmEvent.setRegisteredDelivery(gateway.isRequestDLR() ? 1 : 0);
+        submitSmEvent.setRegisteredDelivery((int) submitSm.getRegisteredDelivery());
         this.setDataToMessageEvent(submitSmEvent, submitSm);
         submitSmEvent.setShortMessage(decodedMessage);
         return submitSmEvent;
     }
 
-    public static void handlerCdrDetail(MessageEvent messageEvent, UtilsEnum.MessageType messageType, UtilsEnum.CdrStatus cdrStatus, CdrProcessor cdrProcessor, boolean createCdr, String message) {
+    public static void handlerCdrDetail(
+            MessageEvent messageEvent, UtilsEnum.MessageType messageType, UtilsEnum.CdrStatus cdrStatus,
+            CdrProcessor cdrProcessor, boolean createCdr, String message) {
         cdrProcessor.putCdrDetailOnRedis(
                 messageEvent.toCdrDetail(UtilsEnum.Module.SMPP_CLIENT, messageType, cdrStatus, message.toUpperCase()));
 

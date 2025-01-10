@@ -135,16 +135,18 @@ public class SmppConnectionManager {
     }
 
     private Flux<List<MessageEvent>> fetchAllItems() {
-        int batchSize = batchPerWorker();
+        Map.Entry<Integer, Integer> workersAndBatch = batchPerWorker();
+        int workers = workersAndBatch.getKey();
+        int batchSize = workersAndBatch.getValue();
         if (batchSize == 0) {
             return Flux.empty();
         }
-        var wpg = this.properties.getWorkersPerGateway();
-        return Flux.range(0, wpg)
+        log.debug("Map Entry result: Worker: {}, BatchSize: {} ", workers, batchSize);
+        return Flux.range(0, workers)
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(worker -> {
                     List<String> batch = jedisCluster.lpop(redisListName, batchSize);
-                    Objects.requireNonNull(batch, "The batch obtained from redis should be " + batchSize + " but was null");
+                    log.debug("Fetch all Items: Worker: {}, BatchSize: {} ", worker, batchSize);
                     List<MessageEvent> submitSmEvents = batch
                             .parallelStream()
                             .map(msgRaw -> Converter.stringToObject(msgRaw, MessageEvent.class))
@@ -154,15 +156,15 @@ public class SmppConnectionManager {
                 }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    private int batchPerWorker() {
+    private Map.Entry<Integer, Integer> batchPerWorker() {
         int recordsToTake = gateway.getTps() * (this.properties.getGatewaysWorkExecuteEvery() / 1000);
         int listSize = (int) jedisCluster.llen(redisListName);
         if (listSize == 0) {
-            return 0;
+            return Map.entry(0, 0);
         }
         int min = Math.min(recordsToTake, listSize);
         var bpw = min / properties.getWorkersPerGateway();
-        return bpw > 0 ? bpw : 1;
+        return bpw > 0 ? Map.entry(this.properties.getWorkersPerGateway(), bpw)  : Map.entry(1, min);
     }
 
     private int handleException(Exception exception, MessageEvent submitSmEvent) {
@@ -308,7 +310,7 @@ public class SmppConnectionManager {
     private void handleNoRetryError(MessageEvent submitSmEventToRetry, int errorCode) {
         log.warn("Failed to retry for submit_sm with id {}. The gateway {} contains this error code for no retry", submitSmEventToRetry.getMessageId(), this.getGateway().getName());
         sendDeliverSm(submitSmEventToRetry, errorCode);
-        MessageReceiverListenerImpl.handlerCdrDetail(submitSmEventToRetry, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.FAILED, cdrProcessor, true, "ERROR IS DEFINED AS NO RETRY");
+        MessageReceiverListenerImpl.handlerCdrDetail(submitSmEventToRetry, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.FAILED, cdrProcessor, true, "ERROR IS DEFINED AS NO RETRY, ERROR " + errorCode);
     }
 
     private void handleRetryAlternateDestination(MessageEvent submitSmEventToRetry, int errorCode) {
@@ -319,7 +321,7 @@ public class SmppConnectionManager {
             if (Objects.nonNull(listName)) {
                 log.warn("Retry for submit_sm with id {}. new networkId {}", submitSmEventToRetry.getMessageId(), submitSmEventToRetry.getDestNetworkId());
                 jedisCluster.rpush(listName, submitSmEventToRetry.toString());
-                MessageReceiverListenerImpl.handlerCdrDetail(submitSmEventToRetry, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.FAILED, cdrProcessor, true, "MESSAGE HAS BEEN SENT TO ALTERNATIVE ROUTE");
+                MessageReceiverListenerImpl.handlerCdrDetail(submitSmEventToRetry, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.FAILED, cdrProcessor, true, "MESSAGE HAS BEEN SENT TO ALTERNATIVE ROUTE, ERROR " + errorCode);
                 return;
             }
             log.warn("Failed to retry for submit_sm with id {}. No more alternative routes were found", submitSmEventToRetry.getMessageId());
@@ -350,7 +352,7 @@ public class SmppConnectionManager {
 
         log.warn("Failed to retry for submit_sm with id {}. The gateway {} doesn't have the error code {} for the retry process.", submitSmEventToRetry.getMessageId(), this.getGateway().getName(), errorCode);
         sendDeliverSm(submitSmEventToRetry, errorCode);
-        MessageReceiverListenerImpl.handlerCdrDetail(submitSmEventToRetry, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.FAILED, cdrProcessor, true, "NOT FOUND ERROR CODE TO AUTO RETRY");
+        MessageReceiverListenerImpl.handlerCdrDetail(submitSmEventToRetry, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.FAILED, cdrProcessor, true, "MESSAGE FAILED DUE TO ERROR " + errorCode);
     }
 
     private void prepareForRetry(MessageEvent submitSmEventToRetry, Map.Entry<Integer, String> alternativeRoute) {
@@ -403,7 +405,7 @@ public class SmppConnectionManager {
             case "SMPP" -> jedisCluster.rpush("smpp_dlr", deliverSmEvent.toString());
             default -> log.error("Invalid Origin Protocol");
         }
-        MessageReceiverListenerImpl.handlerCdrDetail(deliverSmEvent, UtilsEnum.MessageType.DELIVER, UtilsEnum.CdrStatus.FAILED, cdrProcessor, false, "MESSAGE HAS BEEN FAILED, SENDING DLR");
+        MessageReceiverListenerImpl.handlerCdrDetail(deliverSmEvent, UtilsEnum.MessageType.DELIVER, UtilsEnum.CdrStatus.FAILED, cdrProcessor, false, "MESSAGE HAS BEEN FAILED DUE TO ERROR " + errorCode + ", RETURNING DELIVER_SM");
     }
 
     private MessageEvent createDeliverSm(MessageEvent submitSmEventToRetry, int errorCode) {
@@ -515,7 +517,7 @@ public class SmppConnectionManager {
                     encodedShortMessage,
                     Objects.nonNull(submitSmEvent.getOptionalParameters()) ? SmppUtils.getTLV(submitSmEvent) : new OptionalParameter[0]);
             requestCounterTotal.incrementAndGet();
-            MessageReceiverListenerImpl.handlerCdrDetail(submitSmEvent, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.SENT, cdrProcessor, true, "Sent to GW");
+            MessageReceiverListenerImpl.handlerCdrDetail(submitSmEvent, UtilsEnum.MessageType.MESSAGE, UtilsEnum.CdrStatus.SENT, cdrProcessor, true, "");
             service.execute(() -> addInCache(submitSmEvent.getRegisteredDelivery(), submitSmEvent, submitSmResult));
         } catch (Exception e) {
             handleExceptionForErrorOnSendSubmitSm(submitSmEvent, e);

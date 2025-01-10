@@ -81,7 +81,7 @@ class MessageReceiverListenerImplTest {
                 .ip("127.0.0.1")
                 .port(2779)
                 .bindType("TRANSCEIVER")
-                .requestDLR(true)
+                .requestDLR(1)
                 .systemType("cmt")
                 .interfaceVersion("IF_50")
                 .sessionsNumber(10)
@@ -94,7 +94,7 @@ class MessageReceiverListenerImplTest {
                 .enabled(0)
                 .enquireLinkPeriod(30000)
                 .enquireLinkTimeout(0)
-                .requestDLR(true)
+                .requestDLR(1)
                 .mno(1)
                 .tlvMessageReceiptId(true)
                 .messageIdDecimalFormat(false)
@@ -201,7 +201,7 @@ class MessageReceiverListenerImplTest {
         assertTrue(deliverSmCaptured.getOriginNetworkId() > 0);
         assertTrue(deliverSmCaptured.getCheckSubmitSmResponse());
         assertEquals(gatewayMock.getSystemId(), deliverSmCaptured.getSystemId());
-        assertEquals(1, deliverSmCaptured.getRegisteredDelivery());
+        assertEquals(0, deliverSmCaptured.getRegisteredDelivery());
         assertEquals(1, deliverSmCaptured.getOptionalParameters().size());
 
         assertEquals(submitSmResponseEvent.getSubmitSmServerId(), deliverSmCaptured.getMessageId());
@@ -252,7 +252,7 @@ class MessageReceiverListenerImplTest {
         assertTrue(deliverSmCaptured.getOriginNetworkId() > 0);
         assertTrue(deliverSmCaptured.getCheckSubmitSmResponse());
         assertEquals(gatewayMock.getSystemId(), deliverSmCaptured.getSystemId());
-        assertEquals(1, deliverSmCaptured.getRegisteredDelivery());
+        assertEquals(0, deliverSmCaptured.getRegisteredDelivery());
 
         assertEquals(submitSmResponseEvent.getSubmitSmServerId(), deliverSmCaptured.getMessageId());
         assertEquals(submitSmResponseEvent.getParentId(), deliverSmCaptured.getParentId());
@@ -374,7 +374,7 @@ class MessageReceiverListenerImplTest {
     @ValueSource(bytes = {0x00, 0x03, 0x08})
     @DisplayName("OnAcceptSubmitSm when valid data coding then add to queue without require dlr")
     void onAcceptSubmitSmWhenIsValidDataCodingAndIsNotRequestingDlrThenAddToQueue(byte dataCoding) throws ProcessRequestException {
-        gatewayMock.setRequestDLR(false);
+        gatewayMock.setRequestDLR(0);
         messageReceiverListener.setGateway(gatewayMock);
 
         SubmitSm submitSm = new SubmitSm();
