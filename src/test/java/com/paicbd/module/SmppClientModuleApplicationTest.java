@@ -395,7 +395,7 @@ class SmppClientModuleApplicationTest {
                 .enabled(1)
                 .enquireLinkPeriod(30000)
                 .enquireLinkTimeout(5000)
-                .requestDLR(true)
+                .requestDLR(1)
                 .noRetryErrorCode("65")
                 .retryAlternateDestinationErrorCode("640")
                 .bindTimeout(5000)
