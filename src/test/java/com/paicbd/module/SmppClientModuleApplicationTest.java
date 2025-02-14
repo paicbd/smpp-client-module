@@ -420,6 +420,7 @@ class SmppClientModuleApplicationTest {
         return MessageEvent.builder()
                 .id("1722446896082-12194920127675")
                 .messageId("1722446896082-12194920127675")
+                .parentId("1722446896082-12194920127675")
                 .registeredDelivery(1)
                 .originNetworkId(6)
                 .systemId("smppgw")

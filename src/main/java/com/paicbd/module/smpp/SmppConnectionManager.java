@@ -280,7 +280,7 @@ public class SmppConnectionManager {
             submitSmResponseEvent.setSystemId(submitSmEvent.getSystemId());
             submitSmResponseEvent.setId(System.currentTimeMillis() + "-" + System.nanoTime());
             submitSmResponseEvent.setSubmitSmId(messageIdResponse);
-            submitSmResponseEvent.setSubmitSmServerId(submitSmEvent.getMessageId());
+            submitSmResponseEvent.setSubmitSmServerId(submitSmEvent.getParentId());
             submitSmResponseEvent.setOriginProtocol(submitSmEvent.getOriginProtocol().toUpperCase());
             submitSmResponseEvent.setOriginNetworkId(submitSmEvent.getOriginNetworkId());
             submitSmResponseEvent.setOriginNetworkType(submitSmEvent.getOriginNetworkType());
